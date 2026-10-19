@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="Carbon — fast, GPU-accelerated Markdown for Obsidian vaults" width="100%">
+</p>
+
 # Carbon
 
 A fast, GPU-accelerated Markdown editor and viewer for **Obsidian vaults**. Rust, `wgpu`, ~87 MB resident,

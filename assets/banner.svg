@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-label="Carbon — fast GPU-accelerated Markdown for Obsidian vaults">
+  <defs>
+    <!-- background -->
+    <radialGradient id="bg" cx="50%" cy="38%" r="80%">
+      <stop offset="0" stop-color="#1d2127"/>
+      <stop offset="0.55" stop-color="#101216"/>
+      <stop offset="1" stop-color="#060708"/>
+    </radialGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#9fb4ff" stop-opacity="0.30"/>
+      <stop offset="0.5" stop-color="#6f86d8" stop-opacity="0.09"/>
+      <stop offset="1" stop-color="#6f86d8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="streak" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#cfd8ff" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#e9eeff" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#cfd8ff" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- chrome: bright sky, dark horizon, bright ground, like polished metal -->
+    <linearGradient id="chrome" gradientUnits="userSpaceOnUse" x1="30" y1="30" x2="100" y2="100">
+      <stop offset="0"    stop-color="#ffffff"/>
+      <stop offset="0.18" stop-color="#c3cad3"/>
+      <stop offset="0.36" stop-color="#59616b"/>
+      <stop offset="0.49" stop-color="#14181d"/>
+      <stop offset="0.58" stop-color="#7a828c"/>
+      <stop offset="0.78" stop-color="#e7ebf0"/>
+      <stop offset="1"    stop-color="#7d858f"/>
+    </linearGradient>
+    <linearGradient id="chromeBar" gradientUnits="userSpaceOnUse" x1="92" y1="38" x2="100" y2="38">
+      <stop offset="0"    stop-color="#5c6a8f"/>
+      <stop offset="0.28" stop-color="#e8eeff"/>
+      <stop offset="0.55" stop-color="#9fb1ea"/>
+      <stop offset="0.8"  stop-color="#3a4668"/>
+      <stop offset="1"    stop-color="#aebcf2"/>
+    </linearGradient>
+    <linearGradient id="spec" gradientUnits="userSpaceOnUse" x1="38" y1="36" x2="82" y2="92">
+      <stop offset="0"    stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="0.35" stop-color="#ffffff" stop-opacity="0.35"/>
+      <stop offset="0.6"  stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.9"  stop-color="#ffffff" stop-opacity="0.45"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#f6f8fb"/>
+      <stop offset="0.5" stop-color="#aab2bc"/>
+      <stop offset="0.52" stop-color="#6d747d"/>
+      <stop offset="1" stop-color="#d9dee4"/>
+    </linearGradient>
+
+    <filter id="blur24" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="24"/></filter>
+    <filter id="blur6" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6"/></filter>
+    <filter id="blur1" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="0.5"/></filter>
+    <filter id="grain" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7" result="n"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.05"/></feComponentTransfer>
+    </filter>
+    <linearGradient id="floor" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <mask id="floorMask"><rect x="0" y="510" width="1600" height="250" fill="url(#floor)"/></mask>
+
+    <g id="logo">
+      <!-- C -->
+      <path d="M84 40a30 30 0 1 0 0 48" fill="none" stroke="#0b0d10" stroke-opacity="0.75" stroke-width="12.9" stroke-linecap="round"/>
+      <path d="M84 40a30 30 0 1 0 0 48" fill="none" stroke="url(#chrome)" stroke-width="12" stroke-linecap="round"/>
+      <path d="M84 40a30 30 0 1 0 0 48" fill="none" stroke="url(#spec)" stroke-opacity="0.8" stroke-width="2.2" stroke-linecap="round" transform="translate(-0.4 -2.6)" filter="url(#blur1)"/>
+      <path d="M84 40a30 30 0 1 0 0 48" fill="none" stroke="#000" stroke-opacity="0.35" stroke-width="1.2" stroke-linecap="round" transform="translate(0.5 3.6)"/>
+      <!-- bar -->
+      <rect x="91.6" y="37.6" width="8.8" height="52.8" rx="4.4" fill="#0b0d10" fill-opacity="0.75"/>
+      <rect x="92" y="38" width="8" height="52" rx="4" fill="url(#chromeBar)"/>
+      <rect x="93.2" y="39.5" width="1.6" height="49" rx="0.8" fill="#fff" fill-opacity="0.75" filter="url(#blur1)"/>
+    </g>
+  </defs>
+
+  <!-- backdrop -->
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <ellipse cx="800" cy="340" rx="600" ry="380" fill="url(#halo)"/>
+  <rect width="1600" height="900" filter="url(#grain)"/>
+
+  <!-- fine perspective grid on the floor -->
+  <g stroke="#8fa0d8" stroke-opacity="0.07" stroke-width="1">
+    <path d="M0 690H1600M0 740H1600M0 810H1600M0 890H1600"/>
+    <path d="M800 600L-300 900M800 600L100 900M800 600L450 900M800 600L800 900M800 600L1150 900M800 600L1500 900M800 600L1900 900"/>
+  </g>
+
+  <!-- logo glow + body -->
+  <g transform="translate(800 330) scale(6) translate(-65 -64)">
+    <use href="#logo" filter="url(#blur24)" opacity="0.55"/>
+  </g>
+  <g transform="translate(800 330) scale(6) translate(-65 -64)">
+    <use href="#logo"/>
+  </g>
+
+  <!-- floor reflection -->
+  <g mask="url(#floorMask)" opacity="0.7">
+    <g transform="translate(800 690) scale(6 -6) translate(-65 -64)">
+      <use href="#logo"/>
+    </g>
+  </g>
+
+  <!-- light streak across the C -->
+  <rect x="360" y="326" width="880" height="3" fill="url(#streak)" filter="url(#blur6)" opacity="0.55"/>
+  <rect x="500" y="327" width="600" height="1.2" fill="url(#streak)" opacity="0.8"/>
+
+  <!-- wordmark -->
+  <text x="800" y="778" text-anchor="middle" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-weight="700" font-size="68" letter-spacing="22" fill="url(#word)">CARBON</text>
+  <text x="800" y="834" text-anchor="middle" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="25" letter-spacing="3" fill="#8b929c">Fast, GPU-accelerated Markdown for Obsidian vaults</text>
+</svg>
