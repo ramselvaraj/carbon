@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Carbon
+GenericName=Markdown editor
+Comment=Fast GPU-accelerated Markdown editor and viewer for Obsidian vaults
+Exec=carbon
+Icon=carbon
+Terminal=false
+Categories=Office;TextEditor;
+StartupWMClass=carbon
+Keywords=markdown;obsidian;notes;vault;
