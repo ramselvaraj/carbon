@@ -11,7 +11,7 @@ use crate::util::fuzzy;
 use crate::vault::{FileKind, Vault};
 use eframe::egui::{
     self, text::CCursor, text_edit::TextBuffer, vec2, Align, Align2, Color32, CornerRadius, FontFamily, FontId, Frame, Key, Margin, Modifiers, Rect, RichText, ScrollArea,
-    Sense, Stroke, Ui, Vec2,
+    Sense, Stroke, Ui, Vec2, CursorIcon,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -94,14 +94,82 @@ fn empty_tab(app: &mut App, ui: &mut Ui) {
 }
 
 fn image_tab(app: &mut App, ui: &mut Ui) {
-    let (Some(v), Some(rel)) = (&app.vault, app.current_rel()) else { return };
+    let Some(rel) = app.current_rel() else { return };
+    let area = ui.available_rect_before_wrap();
+    let tab_id = app.tab().map(|t| t.id).unwrap_or(0);
+    image_view(app, ui, &rel, tab_id, area);
+}
+
+/// Zoom/pan image viewer filling `area` (used by image tabs and the lightbox).
+/// Returns (image rect, whether empty background was clicked).
+fn image_view(app: &mut App, ui: &mut Ui, rel: &str, tab_id: u64, area: Rect) -> (Rect, bool) {
+    let rel = rel.to_string();
+    let Some(v) = &app.vault else { return (Rect::NOTHING, false) };
     let uri = format!("file://{}", v.abs(&rel).display());
-    ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-        ui.vertical_centered(|ui| {
-            ui.add_space(24.0);
-            ui.add(egui::Image::new(uri).max_width(ui.available_width() - 40.0).fit_to_original_size(1.0));
-        });
+    let nat = app.img_dims.get(&rel).copied().flatten().or_else(|| {
+        let d = image::image_dimensions(v.abs(&rel)).ok();
+        app.img_dims.insert(rel.clone(), d);
+        d
     });
+    let th = app.theme.clone();
+    let ctx = ui.ctx().clone();
+    let resp = ui.allocate_rect(area, egui::Sense::click_and_drag());
+    // (zoom relative to "fit", pan offset). zoom == 0 means fit-to-window.
+    let key = egui::Id::new(("img-view", tab_id, &rel));
+    let (mut zoom, mut pan): (f32, egui::Vec2) = ctx.data(|d| d.get_temp(key)).unwrap_or((0.0, egui::Vec2::ZERO));
+    let Some((w, h)) = nat else {
+        ui.painter().text(area.center(), Align2::CENTER_CENTER, "Can't preview this image — open externally from the palette", FontId::proportional(14.0), th.fg_dim);
+        return (Rect::NOTHING, false);
+    };
+    let (w, h) = (w as f32, h as f32);
+    let fit = ((area.width() - 48.0) / w).min((area.height() - 48.0) / h).min(1.0).max(0.01);
+    let mut scale = if zoom <= 0.0 { fit } else { zoom };
+    if resp.hovered() {
+        let (scroll, ptr) = ctx.input(|i| (i.smooth_scroll_delta.y, i.pointer.hover_pos()));
+        if scroll.abs() > 0.1 {
+            let new = (scale * (scroll * 0.004).exp()).clamp(0.02, 32.0);
+            // zoom about the cursor
+            if let Some(p) = ptr {
+                let c = area.center() + pan;
+                pan += (p - c) * (1.0 - new / scale);
+            }
+            scale = new;
+            zoom = new;
+        }
+    }
+    if resp.dragged() {
+        pan += resp.drag_delta();
+    }
+    let keys = ctx.input(|i| (i.key_pressed(egui::Key::Num0), i.key_pressed(egui::Key::Num1), i.key_pressed(egui::Key::Equals), i.key_pressed(egui::Key::Minus)));
+    if keys.0 || resp.double_clicked() && zoom > 0.0 {
+        zoom = 0.0;
+        pan = egui::Vec2::ZERO;
+    } else if keys.1 || resp.double_clicked() {
+        zoom = 1.0;
+        pan = egui::Vec2::ZERO;
+    } else if keys.2 {
+        zoom = (scale * 1.25).min(32.0);
+    } else if keys.3 {
+        zoom = (scale / 1.25).max(0.02);
+    }
+    if zoom > 0.0 {
+        scale = zoom;
+    } else {
+        scale = fit;
+    }
+    ctx.data_mut(|d| d.insert_temp(key, (zoom, pan)));
+    let rect = Rect::from_center_size(area.center() + pan, vec2(w * scale, h * scale));
+    ui.scope(|ui| {
+        ui.set_clip_rect(area.intersect(ui.clip_rect()));
+        egui::Image::new(uri).corner_radius(2).paint_at(ui, rect);
+    });
+    let label = format!("{}×{}  ·  {:.0}%   (scroll = zoom, drag = pan, double-click = 100% / fit, 0 = fit)", w as u32, h as u32, scale * 100.0);
+    ui.painter().with_clip_rect(area).text(area.left_bottom() + vec2(12.0, -10.0), Align2::LEFT_BOTTOM, label, FontId::proportional(11.5), with_alpha(th.fg_dim, 0.9));
+    if resp.hovered() {
+        ctx.set_cursor_icon(if resp.dragged() { CursorIcon::Grabbing } else { CursorIcon::Grab });
+    }
+    let bg_click = resp.clicked() && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !rect.contains(p));
+    (rect, bg_click)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -306,6 +374,7 @@ fn editor_view(app: &mut App, ui: &mut Ui) {
         ui.visuals_mut().selection.bg_fill = with_alpha(th.accent, 0.32);
 
         let mut te_out = None;
+        let mut table_changed = false;
         let sa = ScrollArea::vertical().id_salt(("edit-scroll", tab_id)).auto_shrink([false, false]).show(ui, |ui| {
             ui.add_space(28.0);
             ui.horizontal_top(|ui| {
@@ -333,12 +402,21 @@ fn editor_view(app: &mut App, ui: &mut Ui) {
                     ui.painter().set(deco_slot, egui::Shape::Vec(shapes));
                     if live {
                         paint_overlays(ui, &o.galley, o.galley_pos, text, &starts, &rows, &plan, &decos, active_lines, col, &th, size);
+                        let tw = TableCtx { plan: &plan, starts: &starts, rows: &rows, gpos: o.galley_pos, col, active: active_lines, th: &th, size, tab_id, ed_id: id };
+                        if table_widgets(ui, text, &tw) {
+                            table_changed = true;
+                        }
                     }
                     te_out = Some(o);
                 });
             });
         });
         let Some(te) = te_out else { return };
+        if table_changed {
+            tab.dirty = true;
+            tab.last_edit = Some(std::time::Instant::now());
+            tab.galley_cache = None;
+        }
         let viewport = sa.inner_rect;
         let galley = te.galley.clone();
         let gpos = te.galley_pos;
@@ -356,25 +434,47 @@ fn editor_view(app: &mut App, ui: &mut Ui) {
         }
 
         // -- inline images (Live) -----------------------------------------------------------------
+        // Painted after the scroll area, so clip to its viewport or they'd cover the tab bar.
         if live {
-            let mut chars = 0usize;
-            for (ln, line) in tab.text.split('\n').enumerate() {
-                let n = line.chars().count();
-                if line.contains("![") && (ln < tab.active_lines.0 || ln > tab.active_lines.1) {
-                    if let Some((target, w)) = editor::embed_only(line) {
-                        if let Some(f) = vault.resolve(&target, &rel).filter(|f| f.kind == FileKind::Image) {
-                            if let Some(nat) = dims_of(&dims, vault, &f.rel) {
-                                let r = galley.pos_from_cursor(CCursor::new(chars)).translate(gpos.to_vec2());
-                                let sz = image_size(nat, w, col);
-                                let rect = Rect::from_min_size(egui::pos2(r.min.x, r.min.y + 4.0), sz);
-                                if rect.intersects(viewport) {
-                                    egui::Image::new(format!("file://{}", vault.abs(&f.rel).display())).corner_radius(4).paint_at(ui, rect);
+            let mut img_rects: Vec<(Rect, String)> = vec![];
+            let clip = viewport.intersect(ui.clip_rect());
+            ui.scope(|ui| {
+                ui.set_clip_rect(clip);
+                let mut chars = 0usize;
+                for (ln, line) in tab.text.split('\n').enumerate() {
+                    let n = line.chars().count();
+                    if line.contains("![") && (ln < tab.active_lines.0 || ln > tab.active_lines.1) {
+                        if let Some((target, w)) = editor::embed_only(line) {
+                            if let Some(f) = vault.resolve(&target, &rel).filter(|f| f.kind == FileKind::Image) {
+                                if let Some(nat) = dims_of(&dims, vault, &f.rel) {
+                                    let r = galley.pos_from_cursor(CCursor::new(chars)).translate(gpos.to_vec2());
+                                    let sz = image_size(nat, w, col);
+                                    let rect = Rect::from_min_size(egui::pos2(r.min.x, r.min.y + 4.0), sz);
+                                    if rect.intersects(clip) {
+                                        egui::Image::new(format!("file://{}", vault.abs(&f.rel).display())).corner_radius(4).paint_at(ui, rect);
+                                        img_rects.push((rect.intersect(clip), f.rel.clone()));
+                                    }
                                 }
                             }
                         }
                     }
+                    chars += n + 1;
                 }
-                chars += n + 1;
+            });
+            // Click an inline image for a full-window viewer; Ctrl+click opens it in its own tab.
+            // Interact on top of the text edit so the click doesn't also drop the caret into the image line.
+            for (n, (r, rel_img)) in img_rects.iter().enumerate() {
+                let resp = ui.interact(*r, egui::Id::new(("inline-img", tab_id, n)), Sense::click());
+                if resp.hovered() {
+                    ctx.set_cursor_icon(egui::CursorIcon::ZoomIn);
+                }
+                if resp.clicked() {
+                    if ctx.input(|i| i.modifiers.command) {
+                        out.follow = Some((LinkRef::Wiki { target: rel_img.clone(), heading: None, embed: true }, true));
+                    } else {
+                        open_lightbox(&ctx, rel_img.clone());
+                    }
+                }
             }
         }
 
@@ -854,10 +954,8 @@ fn paint_overlays(
     }
 }
 
-fn paint_table(ui: &Ui, rect: Rect, t: &editor::Table, th: &crate::theme::Theme, size: f32) {
-    let painter = ui.painter();
+fn table_widths(ui: &Ui, t: &editor::Table, max_w: f32, size: f32) -> Vec<f32> {
     let ncols = t.head.len().max(t.rows.iter().map(|r| r.len()).max().unwrap_or(0)).max(1);
-    let rh = editor::table_row_h(size);
     let pad = 14.0;
     let body = FontId::new(size, FontFamily::Proportional);
     let head = FontId::new(size, crate::fonts::bold());
@@ -873,10 +971,20 @@ fn paint_table(ui: &Ui, rect: Rect, t: &editor::Table, th: &crate::theme::Theme,
         }
     }
     let total: f32 = widths.iter().sum();
-    if total > rect.width() {
-        let k = rect.width() / total;
+    if total > max_w {
+        let k = max_w / total;
         widths.iter_mut().for_each(|w| *w *= k);
     }
+    widths
+}
+
+fn paint_table(ui: &Ui, rect: Rect, t: &editor::Table, th: &crate::theme::Theme, size: f32) {
+    let painter = ui.painter();
+    let rh = editor::table_row_h(size);
+    let pad = 14.0;
+    let body = FontId::new(size, FontFamily::Proportional);
+    let head = FontId::new(size, crate::fonts::bold());
+    let widths = table_widths(ui, t, rect.width(), size);
     let total: f32 = widths.iter().sum();
     let nrows = t.rows.len() + 1;
     let tbl = Rect::from_min_size(rect.min + vec2(0.0, 2.0), vec2(total, nrows as f32 * rh));
@@ -938,5 +1046,307 @@ fn paint_props(ui: &Ui, rect: Rect, props: &[(String, crate::vault::PropValue)],
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Table grid editor: click a rendered cell and edit it in place; the Markdown is rewritten for you.
+// ---------------------------------------------------------------------------------------------
+
+struct TableCtx<'a> {
+    plan: &'a [editor::BlockPlan],
+    starts: &'a [usize],
+    rows: &'a RowTable,
+    gpos: egui::Pos2,
+    col: f32,
+    active: (usize, usize),
+    th: &'a crate::theme::Theme,
+    size: f32,
+    tab_id: u64,
+    ed_id: egui::Id,
+}
+
+#[derive(Clone, Copy)]
+enum TOp {
+    RowAt(usize),    // insert a blank body row so it ends up at table row index r (1-based body index = r)
+    DelRow(usize),   // table row index (>=1)
+    ColAt(usize),
+    DelCol(usize),
+    Align(usize, i8),
+}
+
+/// (editing: first line, row, col, started)
+type EditState = Option<(usize, usize, usize, bool)>;
+
+/// Returns true when the document text changed.
+fn table_widgets(ui: &mut Ui, text: &mut String, tw: &TableCtx) -> bool {
+    let ctx = ui.ctx().clone();
+    let key = egui::Id::new(("tbl-edit", tw.tab_id));
+    let mut state: EditState = ctx.data(|d| d.get_temp(key)).flatten();
+    let mut changed = false;
+    let clip = ui.clip_rect();
+    // Replacement to apply after the loop: (first line, last line, new markdown).
+    let mut replace: Option<(usize, usize, String)> = None;
+
+    for b in tw.plan {
+        let editor::BlockKind::Table(t) = &b.kind else { continue };
+        if (tw.active.0 <= b.last && tw.active.1 >= b.first) || b.first >= tw.starts.len() {
+            continue;
+        }
+        let (top, _) = tw.rows.y_of(tw.starts[b.first]);
+        let rect = Rect::from_min_size(egui::pos2(tw.gpos.x, tw.gpos.y + top), vec2(tw.col, b.height));
+        if !rect.intersects(clip) {
+            continue;
+        }
+        let widths = table_widths(ui, t, rect.width(), tw.size);
+        let ncols = widths.len();
+        let nrows = t.raw_rows.len() + 1;
+        let rh = editor::table_row_h(tw.size);
+        let total: f32 = widths.iter().sum();
+        let tbl = Rect::from_min_size(rect.min + vec2(0.0, 2.0), vec2(total, nrows as f32 * rh));
+        let pad = 14.0;
+        let mut grid_head: Vec<String> = t.raw_head.clone();
+        grid_head.resize(ncols, String::new());
+        let mut grid_rows: Vec<Vec<String>> = t.raw_rows.clone();
+        grid_rows.iter_mut().for_each(|r| r.resize(ncols, String::new()));
+        let mut aligns = t.aligns.clone();
+        aligns.resize(ncols, -1);
+        let mut op: Option<TOp> = None;
+        let mut edited = false;
+        let mut nav: Option<(usize, usize)> = None;
+
+        let mut x = tbl.left();
+        for c in 0..ncols {
+            let w = widths[c];
+            for r in 0..nrows {
+                let cell = Rect::from_min_size(egui::pos2(x, tbl.top() + r as f32 * rh), vec2(w, rh));
+                let editing = state.is_some_and(|(f, er, ec, _)| f == b.first && er == r && ec == c);
+                if editing {
+                    let started = state.map(|s| s.3).unwrap_or(true);
+                    let id = egui::Id::new(("tbl-cell", tw.tab_id, b.first, r, c));
+                    if !started {
+                        ctx.memory_mut(|m| m.request_focus(id));
+                    }
+                    // Keyboard navigation inside the grid.
+                    let (tab, shift_tab, enter) = ctx.input_mut(|i| {
+                        (
+                            i.consume_key(Modifiers::NONE, Key::Tab),
+                            i.consume_key(Modifiers::SHIFT, Key::Tab),
+                            i.consume_key(Modifiers::NONE, Key::Enter),
+                        )
+                    });
+                    if tab {
+                        nav = Some(if c + 1 < ncols { (r, c + 1) } else { (r + 1, 0) });
+                    } else if shift_tab {
+                        nav = Some(if c > 0 { (r, c - 1) } else if r > 0 { (r - 1, ncols - 1) } else { (r, c) });
+                    } else if enter {
+                        nav = Some((r + 1, c));
+                    }
+                    let buf = if r == 0 { &mut grid_head[c] } else { &mut grid_rows[r - 1][c] };
+                    let font = if r == 0 { FontId::new(tw.size, crate::fonts::bold()) } else { FontId::new(tw.size, FontFamily::Proportional) };
+                    ui.painter().rect_filled(cell.shrink(1.0), 2.0, with_alpha(tw.th.bg_darker, 0.98));
+                    ui.painter().rect_stroke(cell.shrink(1.0), 2.0, Stroke::new(1.5, tw.th.accent), egui::StrokeKind::Inside);
+                    let inner = Rect::from_min_size(cell.min + vec2(pad - 4.0, 0.0), vec2((w - pad * 2.0 + 8.0).max(20.0), rh));
+                    let before = buf.clone();
+                    let resp = ui.put(
+                        inner,
+                        egui::TextEdit::singleline(buf)
+                            .id(id)
+                            .frame(Frame::NONE)
+                            .margin(Margin::ZERO)
+                            .font(font)
+                            .vertical_align(Align::Center)
+                            .desired_width(inner.width()),
+                    );
+                    if *buf != before {
+                        edited = true;
+                    }
+                    if started && !resp.has_focus() && nav.is_none() {
+                        state = None;
+                    } else if !started {
+                        state = state.map(|s| (s.0, s.1, s.2, true));
+                    }
+                } else {
+                    let resp = ui.interact(cell, egui::Id::new(("tbl-hit", tw.tab_id, b.first, r, c)), Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(cell.shrink(1.0), 2.0, with_alpha(tw.th.accent, 0.10));
+                        ctx.set_cursor_icon(egui::CursorIcon::Text);
+                    }
+                    if resp.clicked() {
+                        state = Some((b.first, r, c, false));
+                        ctx.request_repaint();
+                    }
+                    resp.context_menu(|ui| {
+                        if r > 0 && ui.button("Insert row above").clicked() {
+                            op = Some(TOp::RowAt(r));
+                            ui.close();
+                        }
+                        if ui.button("Insert row below").clicked() {
+                            op = Some(TOp::RowAt(r + 1));
+                            ui.close();
+                        }
+                        if r > 0 && ui.button("Delete row").clicked() {
+                            op = Some(TOp::DelRow(r));
+                            ui.close();
+                        }
+                        ui.separator();
+                        if ui.button("Insert column left").clicked() {
+                            op = Some(TOp::ColAt(c));
+                            ui.close();
+                        }
+                        if ui.button("Insert column right").clicked() {
+                            op = Some(TOp::ColAt(c + 1));
+                            ui.close();
+                        }
+                        if ncols > 1 && ui.button("Delete column").clicked() {
+                            op = Some(TOp::DelCol(c));
+                            ui.close();
+                        }
+                        ui.separator();
+                        for (label, a) in [("Align left", -1i8), ("Align center", 0), ("Align right", 1)] {
+                            if ui.button(label).clicked() {
+                                op = Some(TOp::Align(c, a));
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+            }
+            x += w;
+        }
+
+        // Hover affordances: "+" to append a row (below) or a column (right).
+        let near = tbl.expand(26.0);
+        if ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| near.contains(p)) || state.is_some_and(|s| s.0 == b.first) {
+            let plus = |center: egui::Pos2, id: &str, tip: &str| -> bool {
+                let r = Rect::from_center_size(center, vec2(18.0, 18.0));
+                let resp = ui.interact(r, egui::Id::new((id, tw.tab_id, b.first)), Sense::click()).on_hover_text(tip);
+                let hot = resp.hovered();
+                ui.painter().circle_filled(r.center(), 9.0, with_alpha(tw.th.accent, if hot { 0.9 } else { 0.35 }));
+                let k = 4.0;
+                let sc = Stroke::new(1.6, tw.th.bg);
+                ui.painter().line_segment([r.center() - vec2(k, 0.0), r.center() + vec2(k, 0.0)], sc);
+                ui.painter().line_segment([r.center() - vec2(0.0, k), r.center() + vec2(0.0, k)], sc);
+                resp.clicked()
+            };
+            if plus(egui::pos2(tbl.center().x, tbl.bottom() + 14.0), "tbl-add-row", "Add row") {
+                op = Some(TOp::RowAt(nrows));
+            }
+            if plus(egui::pos2(tbl.right() + 16.0, tbl.center().y), "tbl-add-col", "Add column") {
+                op = Some(TOp::ColAt(ncols));
+            }
+        }
+
+        // Tab/Enter navigation (may append a row).
+        if let Some((nr, nc)) = nav {
+            if nr >= nrows {
+                op = Some(TOp::RowAt(nrows));
+                state = Some((b.first, nr, nc, false));
+            } else {
+                state = Some((b.first, nr, nc, false));
+            }
+        }
+
+        match op {
+            Some(TOp::RowAt(r)) => {
+                grid_rows.insert((r - 1).min(grid_rows.len()), vec![String::new(); ncols]);
+                edited = true;
+            }
+            Some(TOp::DelRow(r)) => {
+                grid_rows.remove(r - 1);
+                state = None;
+                edited = true;
+            }
+            Some(TOp::ColAt(c)) => {
+                grid_head.insert(c, String::new());
+                grid_rows.iter_mut().for_each(|r| r.insert(c, String::new()));
+                aligns.insert(c, -1);
+                edited = true;
+            }
+            Some(TOp::DelCol(c)) => {
+                grid_head.remove(c);
+                grid_rows.iter_mut().for_each(|r| {
+                    r.remove(c);
+                });
+                aligns.remove(c);
+                state = None;
+                edited = true;
+            }
+            Some(TOp::Align(c, a)) => {
+                aligns[c] = a;
+                edited = true;
+            }
+            None => {}
+        }
+        if edited {
+            replace = Some((b.first, b.last, editor::table_to_md(&grid_head, &aligns, &grid_rows)));
+            break; // text is about to change; remaining blocks re-plan next frame
+        }
+    }
+
+    if let Some((first, last, md)) = replace {
+        let lines: Vec<&str> = text.split('\n').collect();
+        let start: usize = lines[..first].iter().map(|l| l.len() + 1).sum();
+        let end: usize = start + lines[first..=last.min(lines.len() - 1)].iter().map(|l| l.len()).sum::<usize>() + (last - first);
+        if text[start..end] != md {
+            let old_chars = text[start..end].chars().count();
+            let new_chars = md.chars().count();
+            let start_c = text[..start].chars().count();
+            text.replace_range(start..end, &md);
+            changed = true;
+            // Keep the (hidden) main caret anchored to the same spot if it sits after the table.
+            let mut st = egui::text_edit::TextEditState::load(&ctx, tw.ed_id).unwrap_or_default();
+            if let Some(r) = st.cursor.char_range() {
+                let shift = |c: CCursor| if c.index.0 >= start_c + old_chars { CCursor::new(c.index.0 + new_chars - old_chars) } else { c };
+                st.cursor.set_char_range(Some(egui::text::CCursorRange { primary: shift(r.primary), secondary: shift(r.secondary), h_pos: None }));
+                st.store(&ctx, tw.ed_id);
+            }
+        }
+    }
+    ctx.data_mut(|d| d.insert_temp(key, state));
+    changed
+}
+
+// ---------------------------------------------------------------------------------------------
+// Lightbox: click an inline image to view it full-window; Esc / click outside closes.
+// ---------------------------------------------------------------------------------------------
+
+pub fn open_lightbox(ctx: &egui::Context, rel: String) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("lightbox"), Some(rel)));
+    ctx.request_repaint();
+}
+
+pub fn lightbox(app: &mut App, ctx: &egui::Context) {
+    let key = egui::Id::new("lightbox");
+    let Some(rel) = ctx.data(|d| d.get_temp::<Option<String>>(key)).flatten() else { return };
+    let screen = ctx.content_rect();
+    let mut close = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
+    let mut open_tab = false;
+    egui::Area::new(egui::Id::new("lightbox-area")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+        ui.painter().rect_filled(screen, 0.0, Color32::from_black_alpha(215));
+        let (_, bg) = image_view(app, ui, &rel, u64::MAX, screen);
+        close |= bg;
+        let th = app.theme.clone();
+        let btn = |ui: &mut Ui, at: egui::Pos2, label: &str| -> bool {
+            let r = Rect::from_min_size(at, vec2(110.0, 28.0));
+            let resp = ui.interact(r, egui::Id::new(("lb-btn", label)), Sense::click());
+            ui.painter().rect_filled(r, 6.0, with_alpha(th.bg_darker, if resp.hovered() { 1.0 } else { 0.85 }));
+            ui.painter().text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(13.0), th.fg_bright);
+            resp.clicked()
+        };
+        if btn(ui, screen.right_top() + vec2(-122.0, 12.0), "Close  (Esc)") {
+            close = true;
+        }
+        if btn(ui, screen.right_top() + vec2(-122.0, 46.0), "Open in tab") {
+            open_tab = true;
+        }
+    });
+    if open_tab {
+        close = true;
+        app.open_path(&rel, true, None);
+    }
+    if close {
+        ctx.data_mut(|d| d.insert_temp(key, None::<String>));
+        ctx.request_repaint();
     }
 }

@@ -201,7 +201,12 @@ pub struct App {
     pub clipboard: Option<arboard::Clipboard>,
     pub last_title: String,
     pub session_dirty: bool,
+    /// Debounce timer for an external change to `.obsidian/workspace.json`.
+    pub ws_pending: Option<Instant>,
+    /// Last tab state exchanged with workspace.json (suppresses echoes of our own writes).
+    pub ws_last: Option<crate::workspace::Ws>,
     pub ctx: egui::Context,
+    pub scroll_fx: crate::scroll::ScrollFx,
     pub obsidian_vaults: Vec<PathBuf>,
     /// Frames left in which cached text layouts must be rebuilt after a theme change
     /// (egui re-rasterises its font atlas one pass after the visuals change).
@@ -276,6 +281,9 @@ impl App {
             clipboard: None,
             last_title: String::new(),
             session_dirty: false,
+            ws_pending: None,
+            ws_last: None,
+            scroll_fx: Default::default(),
             ctx: cc.egui_ctx.clone(),
             obsidian_vaults: obsidian_known_vaults(),
             theme_settle: 0,
@@ -326,11 +334,19 @@ impl App {
         self.backlinks_cache = None;
         self.tree_key = (u64::MAX, u64::MAX);
 
-        let sess = Session::load(&path);
+        let mut sess = Session::load(&path);
+        // Obsidian's workspace.json (shared via the vault) wins over Carbon's own memory of the tabs.
+        self.ws_last = None;
+        if let Some(ws) = crate::workspace::read(&path) {
+            sess.tabs = ws.tabs.iter().map(|t| SessionTab { path: t.path.clone(), pinned: t.pinned, view: Some(t.view) }).collect();
+            sess.active = ws.active;
+            self.ws_last = Some(ws);
+        }
         self.expanded = sess.expanded.into_iter().collect();
         self.expanded_ver += 1;
         let mut restored = 0;
-        for st in &sess.tabs {
+        let mut active_restored = 0;
+        for (n, st) in sess.tabs.iter().enumerate() {
             let exists = self.vault.as_ref().is_some_and(|v| v.file(&st.path).is_some());
             if exists {
                 self.open_path(&st.path, true, None);
@@ -340,15 +356,110 @@ impl App {
                         t.view = v;
                     }
                 }
+                if n == sess.active {
+                    active_restored = self.tabs.len() - 1;
+                }
                 restored += 1;
             }
         }
         if restored > 0 {
-            self.active = sess.active.min(self.tabs.len() - 1);
+            self.active = active_restored.min(self.tabs.len() - 1);
         } else {
             self.new_tab();
         }
         self.overlay = Overlay::None;
+    }
+
+    /// Current tab strip in workspace.json terms (file tabs only).
+    fn ws_state(&self) -> crate::workspace::Ws {
+        let mut tabs = vec![];
+        let mut active = 0;
+        for (i, t) in self.tabs.iter().enumerate() {
+            if let Some(p) = &t.path {
+                if i == self.active {
+                    active = tabs.len();
+                }
+                tabs.push(crate::workspace::WsTab { path: p.clone(), view: t.view, pinned: t.pinned });
+            }
+        }
+        crate::workspace::Ws { tabs, active }
+    }
+
+    /// Carbon → Obsidian: write the tab strip into `.obsidian/workspace.json`.
+    fn push_workspace(&mut self) {
+        let Some(v) = &self.vault else { return };
+        let ws = self.ws_state();
+        if self.ws_last.as_ref() == Some(&ws) || ws.tabs.is_empty() {
+            return;
+        }
+        let is_image = |p: &str| v.file(p).is_some_and(|f| f.kind == FileKind::Image);
+        crate::workspace::write(&v.root, &ws, &is_image);
+        self.ws_last = Some(ws);
+    }
+
+    /// Obsidian → Carbon: follow an external change to workspace.json (sync from another machine, Obsidian).
+    fn poll_workspace(&mut self, ctx: &egui::Context) {
+        let Some(t0) = self.ws_pending else { return };
+        if t0.elapsed() < Duration::from_millis(400) {
+            ctx.request_repaint_after(Duration::from_millis(420));
+            return;
+        }
+        self.ws_pending = None;
+        let Some(v) = &self.vault else { return };
+        let Some(ws) = crate::workspace::read(&v.root) else { return };
+        if self.ws_last.as_ref() == Some(&ws) || ws == self.ws_state() {
+            self.ws_last = Some(ws);
+            return;
+        }
+        self.ws_last = Some(ws.clone());
+        self.apply_workspace(ws);
+    }
+
+    fn apply_workspace(&mut self, ws: crate::workspace::Ws) {
+        let Some(v) = &self.vault else { return };
+        let ok: Vec<(usize, &crate::workspace::WsTab)> = ws
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| v.file(&t.path).is_some_and(|f| matches!(f.kind, FileKind::Note | FileKind::Image)))
+            .collect();
+        if ok.is_empty() {
+            return;
+        }
+        let want: Vec<(String, ViewMode, bool, bool)> = ok.iter().map(|(i, t)| (t.path.clone(), t.view, t.pinned, *i == ws.active)).collect();
+        self.flush_all();
+        let mut pool: Vec<Tab> = std::mem::take(&mut self.tabs);
+        let mut active = 0;
+        for (path, view, pinned, is_active) in want {
+            if let Some(i) = pool.iter().position(|t| t.path.as_deref() == Some(path.as_str())) {
+                let mut t = pool.remove(i);
+                t.pinned = pinned;
+                if t.view != view {
+                    t.view = view;
+                    t.galley_cache = None;
+                    t.plan_cache = None;
+                }
+                self.tabs.push(t);
+            } else {
+                self.new_tab();
+                let i = self.tabs.len() - 1;
+                self.tabs[i].view = view;
+                self.load_into(i, &path);
+                let t = &mut self.tabs[i];
+                t.pinned = pinned;
+                t.history = vec![path];
+                t.hpos = 0;
+            }
+            if is_active {
+                active = self.tabs.len() - 1;
+            }
+        }
+        self.active = active;
+        self.fx.snap();
+        self.ws_last = Some(self.ws_state());
+        if self.tabs[active].view != ViewMode::Reading {
+            self.tabs[active].focus_editor = true;
+        }
     }
 
     pub fn save_session(&self) {
@@ -872,7 +983,10 @@ impl App {
             while let Ok(p) = rx.try_recv() {
                 if let Some(v) = &self.vault {
                     if let Some(rel) = v.rel_of(&p) {
-                        if !rel.split('/').any(|s| s.starts_with('.')) {
+                        if rel == crate::workspace::REL {
+                            self.ws_pending = Some(Instant::now());
+                            any = true;
+                        } else if !rel.split('/').any(|s| s.starts_with('.')) {
                             self.fs_changed.insert(rel);
                             any = true;
                         }
@@ -914,7 +1028,9 @@ impl App {
         if self.session_dirty {
             self.session_dirty = false;
             self.save_session();
+            self.push_workspace();
         }
+        self.poll_workspace(ctx);
 
         // Window title.
         let title = match (self.tab(), &self.vault) {
@@ -1217,6 +1333,10 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.scroll_fx.process(ctx, raw);
+    }
+
     fn clear_color(&self, _v: &egui::Visuals) -> [f32; 4] {
         [0.0; 4]
     }

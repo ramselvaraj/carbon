@@ -27,9 +27,10 @@ cargo run --release -- /path/to/vault     # or just `carbon` to reopen the last 
 
 ## Vaults
 
-* Open any folder as a vault (`.obsidian/` is read, never written).
+* Open any folder as a vault (`.obsidian/` is read; the only thing written back is the tab strip in `workspace.json`).
+* **Tab sync with Obsidian** – open tabs, active tab, pinned and view mode are read from and written to `.obsidian/workspace.json`, so a synced vault opens the same tabs in both apps, and Carbon follows changes that arrive while it runs.
 * Switcher lists recent vaults **and every vault Obsidian knows about** (`~/.config/obsidian/obsidian.json`).
-* Tabs/open files/expanded folders are restored per vault (stored in `~/.config/carbon`, not in your vault).
+* Expanded folders are restored per vault (stored in `~/.config/carbon`, not in your vault).
 * Watches the vault: edits from git, Obsidian or other editors show up immediately.
 
 ## Features

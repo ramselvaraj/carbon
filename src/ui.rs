@@ -63,6 +63,7 @@ pub fn draw(app: &mut App, ui: &mut Ui) {
 
     toast(app, &ctx);
     crate::ui_overlay::overlays(app, &ctx);
+    crate::ui_editor::lightbox(app, &ctx);
 }
 
 pub fn icon_button(ui: &mut Ui, icon: Icon, tip: &str, selected: bool, th: &crate::theme::Theme) -> egui::Response {

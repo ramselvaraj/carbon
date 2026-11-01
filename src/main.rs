@@ -10,6 +10,7 @@ mod fonts;
 mod hot;
 mod icons;
 mod reader;
+mod scroll;
 mod search;
 mod theme;
 mod ui;
@@ -18,6 +19,7 @@ mod ui_overlay;
 mod ui_side;
 mod util;
 mod vault;
+mod workspace;
 
 use eframe::egui;
 

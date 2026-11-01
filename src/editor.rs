@@ -1257,6 +1257,15 @@ mod tests {
     }
 
     #[test]
+    fn table_roundtrip() {
+        let t = "| A | B |\n|:--|--:|\n| x\\|y | **z** |";
+        let p = plan_blocks(t, 16.0);
+        let BlockKind::Table(tb) = &p[0].kind else { panic!() };
+        let md = table_to_md(&tb.raw_head, &tb.aligns, &tb.raw_rows);
+        assert_eq!(md, "| A | B |\n| --- | ---: |\n| x\\|y | **z** |");
+    }
+
+    #[test]
     fn task_box_range() {
         assert_eq!(task_box("  - [ ] x"), Some(4..7));
         assert_eq!(task_box("- plain"), None);
@@ -1273,6 +1282,46 @@ pub struct Table {
     /// -1 left, 0 centre, 1 right
     pub aligns: Vec<i8>,
     pub rows: Vec<Vec<String>>,
+    /// Cell source text (inline Markdown intact) — what the grid editor edits.
+    pub raw_head: Vec<String>,
+    pub raw_rows: Vec<Vec<String>>,
+}
+
+/// Serialise a table grid back to Markdown (no trailing newline). Pads ragged rows, escapes `|`.
+pub fn table_to_md(head: &[String], aligns: &[i8], rows: &[Vec<String>]) -> String {
+    let n = head.len().max(rows.iter().map(|r| r.len()).max().unwrap_or(0)).max(1);
+    let cell = |s: &str| {
+        let mut o = String::new();
+        for c in s.chars() {
+            match c {
+                '|' => o.push_str("\\|"),
+                '\n' | '\r' => o.push(' '),
+                c => o.push(c),
+            }
+        }
+        o
+    };
+    let row = |r: &[String]| {
+        let mut l = String::from("|");
+        for c in 0..n {
+            l.push(' ');
+            l.push_str(&cell(r.get(c).map(|s| s.as_str()).unwrap_or("")));
+            l.push_str(" |");
+        }
+        l
+    };
+    let mut out = vec![row(head)];
+    let mut sep = String::from("|");
+    for c in 0..n {
+        sep.push_str(match aligns.get(c).copied().unwrap_or(-1) {
+            0 => " :---: |",
+            1 => " ---: |",
+            _ => " --- |",
+        });
+    }
+    out.push(sep);
+    out.extend(rows.iter().map(|r| row(r)));
+    out.join("\n")
 }
 
 #[derive(Clone, Debug)]
@@ -1367,7 +1416,8 @@ pub fn plan_blocks(text: &str, size: f32) -> Vec<BlockPlan> {
             continue;
         }
         if t.contains('|') && i + 1 < lines.len() && is_table_sep(lines[i + 1]) {
-            let head: Vec<String> = split_row(l).iter().map(|c| plain_inline(c)).collect();
+            let raw_head = split_row(l);
+            let head: Vec<String> = raw_head.iter().map(|c| plain_inline(c)).collect();
             let aligns: Vec<i8> = split_row(lines[i + 1])
                 .iter()
                 .map(|c| match (c.starts_with(':'), c.ends_with(':')) {
@@ -1378,12 +1428,15 @@ pub fn plan_blocks(text: &str, size: f32) -> Vec<BlockPlan> {
                 .collect();
             let mut j = i + 2;
             let mut rows = vec![];
+            let mut raw_rows = vec![];
             while j < lines.len() && !lines[j].trim().is_empty() && lines[j].contains('|') {
-                rows.push(split_row(lines[j]).iter().map(|c| plain_inline(c)).collect());
+                let r = split_row(lines[j]);
+                rows.push(r.iter().map(|c| plain_inline(c)).collect());
+                raw_rows.push(r);
                 j += 1;
             }
             let h = (rows.len() + 1) as f32 * table_row_h(size) + 8.0;
-            out.push(BlockPlan { first: i, last: j - 1, kind: BlockKind::Table(Table { head, aligns, rows }), height: h });
+            out.push(BlockPlan { first: i, last: j - 1, kind: BlockKind::Table(Table { head, aligns, rows, raw_head, raw_rows }), height: h });
             i = j;
             continue;
         }
