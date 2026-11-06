@@ -101,11 +101,14 @@ fn tab_bar(app: &mut App, ui: &mut Ui) {
     ui.painter().rect_filled(bar_rect, 0.0, with_alpha(th.bg_darker, op));
     let mut bar = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect.shrink2(vec2(6.0, 4.0))).layout(Layout::left_to_right(Align::Center)));
 
-    // File browser toggle (also Ctrl+\\).
-    if icon_button(&mut bar, Icon::SidebarLeft, if app.cfg.left_sidebar { "Collapse file browser (Ctrl+\\)" } else { "Show file browser (Ctrl+\\)" }, app.cfg.left_sidebar, &th).clicked() {
-        app.cfg.left_sidebar = !app.cfg.left_sidebar;
+    // File browser toggle (also Ctrl+\\). Only shown while the sidebar is collapsed; when it's open
+    // the collapse button lives in the sidebar header, so showing both duplicates the icon.
+    if !app.cfg.left_sidebar {
+        if icon_button(&mut bar, Icon::SidebarLeft, "Show file browser (Ctrl+\\)", false, &th).clicked() {
+            app.cfg.left_sidebar = true;
+        }
+        bar.add_space(4.0);
     }
-    bar.add_space(4.0);
     // Back / forward.
     let (can_back, can_fwd) = app.tab().map(|t| (t.hpos > 0, t.hpos + 1 < t.history.len())).unwrap_or((false, false));
     bar.add_enabled_ui(can_back, |ui| {
